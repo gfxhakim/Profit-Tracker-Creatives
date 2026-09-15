@@ -1,0 +1,153 @@
+// COD Profit Tracker & Creative Winner Attribution
+// Core models follow the product specification; additive models (daily stats,
+// sync logs, users) support time-series reporting, integration health and auth.
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Product {
+  id                     String   @id @default(uuid())
+  name                   String
+  sku                    String   @unique
+  cogsUnitPrice          Float
+  batchQuantity          Int
+  productionLeadTimeDays Int
+  sellingPrice           Float
+  deadStockUnits         Int      @default(0)
+  createdAt              DateTime @default(now())
+
+  fulfillmentRates FulfillmentRate?
+  campaigns        Campaign[]
+  orders           Order[]
+}
+
+model FulfillmentRate {
+  id                   String  @id @default(uuid())
+  productId            String  @unique
+  product              Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  confirmationFee      Float   @default(0.0)
+  deliveryFee          Float   @default(0.0)
+  returnFee            Float   @default(0.0)
+  codGatewayFeePercent Float   @default(0.0)
+}
+
+model OperationalExpense {
+  id           String   @id @default(uuid())
+  category     String // "AI Tool", "Employee Payroll", "Additional Fee"
+  name         String
+  planDetails  String?
+  amount       Float
+  billingCycle String // "Daily", "Weekly", "Monthly", "One-time"
+  startedAt    DateTime @default(now())
+  endedAt      DateTime?
+  createdAt    DateTime @default(now())
+
+  @@index([category])
+}
+
+model Campaign {
+  id            String       @id
+  name          String
+  adAccountId   String
+  adAccountName String?
+  pixelId       String
+  dailyBudget   Float
+  status        String       @default("UNKNOWN")
+  productId     String
+  product       Product      @relation(fields: [productId], references: [id])
+  creatives     AdCreative[]
+
+  @@index([productId])
+}
+
+model AdCreative {
+  adId        String   @id
+  adName      String
+  adSetName   String?
+  campaignId  String
+  campaign    Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  utmContent  String   @unique
+  totalSpend  Float    @default(0.0)
+  thumbnailUrl String?
+  status      String   @default("UNKNOWN")
+  lastSyncedAt DateTime?
+
+  orders     Order[]
+  dailyStats AdCreativeDailyStat[]
+
+  @@index([campaignId])
+}
+
+/// Per-day Meta insights for an ad. Enables date-range filtering, trend charts
+/// and day-level breakeven checks that a lifetime `totalSpend` cannot answer.
+model AdCreativeDailyStat {
+  id          String     @id @default(uuid())
+  adId        String
+  adCreative  AdCreative @relation(fields: [adId], references: [adId], onDelete: Cascade)
+  date        DateTime   @db.Date
+  spend       Float      @default(0.0)
+  impressions Int        @default(0)
+  clicks      Int        @default(0)
+  reach       Int        @default(0)
+  updatedAt   DateTime   @updatedAt
+
+  @@unique([adId, date])
+  @@index([date])
+}
+
+model Order {
+  shopifyOrderId String      @id
+  orderNumber    String?
+  mdmOrderId     String?
+  customerPhone  String?
+  customerCity   String?
+  productId      String
+  product        Product     @relation(fields: [productId], references: [id])
+  quantity       Int         @default(1)
+  adId           String?
+  adCreative     AdCreative? @relation(fields: [adId], references: [adId])
+  utmContent     String?
+  orderStatus    String      @default("NEW") // NEW, CONFIRMED, SHIPPED, DELIVERED, CANCELLED, RETURNED
+  mdmStatusRaw   String?
+  saleAmount     Float
+  confirmedAt    DateTime?
+  deliveredAt    DateTime?
+  returnedAt     DateTime?
+  createdAt      DateTime    @default(now())
+  updatedAt      DateTime    @updatedAt
+
+  @@index([adId])
+  @@index([productId])
+  @@index([orderStatus])
+  @@index([createdAt])
+  @@index([mdmOrderId])
+}
+
+/// Audit trail for Meta / MDM synchronisation runs and Shopify webhook batches.
+model SyncLog {
+  id           String   @id @default(uuid())
+  source       String // "META", "MDM", "SHOPIFY"
+  status       String // "SUCCESS", "PARTIAL", "FAILED"
+  recordsRead  Int      @default(0)
+  recordsWritten Int    @default(0)
+  message      String?
+  startedAt    DateTime @default(now())
+  finishedAt   DateTime?
+
+  @@index([source, startedAt])
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  name         String?
+  passwordHash String
+  role         String   @default("ADMIN")
+  createdAt    DateTime @default(now())
+}
