@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  AUTH_SCHEMES,
   ORDERS_SEARCH_PATH,
+  buildAuth,
+  configuredScheme,
   buildSearchBody,
   fetchOrderByReference,
   fetchOrders,
@@ -156,5 +159,66 @@ describe('lastPageOf', () => {
 
   it('returns null when the response says nothing about paging', () => {
     expect(lastPageOf({ data: [] })).toBeNull();
+  });
+});
+
+describe('buildAuth', () => {
+  it('sends exactly one credential per scheme', () => {
+    const count = (parts: { headers: object; body: object; query: object }) =>
+      Object.keys(parts.headers).length + Object.keys(parts.body).length + Object.keys(parts.query).length;
+
+    for (const scheme of AUTH_SCHEMES) {
+      expect(count(buildAuth(scheme, 'k'))).toBe(1);
+    }
+  });
+
+  it('places the key where each scheme expects it', () => {
+    expect(buildAuth('bearer', 'k').headers).toEqual({ authorization: 'Bearer k' });
+    expect(buildAuth('raw', 'k').headers).toEqual({ authorization: 'k' });
+    expect(buildAuth('token', 'k').headers).toEqual({ authorization: 'Token k' });
+    expect(buildAuth('x-api-key', 'k').headers).toEqual({ 'x-api-key': 'k' });
+    expect(buildAuth('x-auth-token', 'k').headers).toEqual({ 'x-auth-token': 'k' });
+    expect(buildAuth('body-api_key', 'k').body).toEqual({ api_key: 'k' });
+    expect(buildAuth('query-api_key', 'k').query).toEqual({ api_key: 'k' });
+  });
+});
+
+describe('configuredScheme', () => {
+  it('defaults to bearer and ignores an unrecognised value', () => {
+    delete process.env.MDM_AUTH_SCHEME;
+    expect(configuredScheme()).toBe('bearer');
+    process.env.MDM_AUTH_SCHEME = 'nonsense';
+    expect(configuredScheme()).toBe('bearer');
+  });
+
+  it('accepts a configured scheme case-insensitively', () => {
+    process.env.MDM_AUTH_SCHEME = 'X-Auth-Token';
+    expect(configuredScheme()).toBe('x-auth-token');
+    delete process.env.MDM_AUTH_SCHEME;
+  });
+});
+
+describe('auth scheme on the wire', () => {
+  it('sends the configured credential and no others', async () => {
+    process.env.MDM_AUTH_SCHEME = 'x-auth-token';
+    const calls = stubFetch(() => ({ data: [] }));
+
+    await fetchOrders({ since: '2026-09-01', until: '2026-09-15' });
+
+    expect(calls[0].headers['x-auth-token']).toBe('test-key');
+    expect(calls[0].headers.authorization).toBeUndefined();
+    expect(calls[0].headers['x-api-key']).toBeUndefined();
+    delete process.env.MDM_AUTH_SCHEME;
+  });
+
+  it('merges a body-borne credential into the search body', async () => {
+    process.env.MDM_AUTH_SCHEME = 'body-api_key';
+    const calls = stubFetch(() => ({ data: [] }));
+
+    await fetchOrders({ since: '2026-09-01', until: '2026-09-15' });
+
+    expect(calls[0].body).toMatchObject({ api_key: 'test-key', start_date: '2026-09-01', page: 1 });
+    expect(calls[0].headers.authorization).toBeUndefined();
+    delete process.env.MDM_AUTH_SCHEME;
   });
 });

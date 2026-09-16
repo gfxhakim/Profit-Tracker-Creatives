@@ -181,6 +181,25 @@ paging in the JSON body. Set `MDM_API_BASE_URL` to the host only
 (`https://api.mdm.express`) — the client appends the path. A base URL that
 already ends in `/api/v2` is also accepted and not doubled.
 
+**MDM sync returns 401 or 403**
+
+The endpoint exists but rejected the key. A 401 does not say which credential
+shape was expected, so probe for it instead of guessing:
+
+```bash
+npm run mdm:probe
+```
+
+It tries each supported scheme against the live search endpoint and prints the
+one that works, ready to paste into `.env`:
+
+```env
+MDM_AUTH_SCHEME="x-auth-token"
+```
+
+If every scheme returns 401, the key itself is invalid or not enabled for this
+endpoint — check it in the MDM dashboard.
+
 **Meta or MDM sync returns an error**
 
 Check the Settings page — every sync attempt is recorded with its error message.

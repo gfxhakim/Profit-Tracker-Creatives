@@ -105,9 +105,71 @@ export function normalizeMdmStatus(raw: string | undefined | null): OrderStatus 
   return STATUS_MAP[statusKey(raw)] ?? 'NEW';
 }
 
+/**
+ * How the API key is presented. MDM's scheme is set with MDM_AUTH_SCHEME;
+ * `npm run mdm:probe` reports which one the live API accepts.
+ */
+export const AUTH_SCHEMES = [
+  'bearer', // Authorization: Bearer <key>   (default)
+  'raw', // Authorization: <key>
+  'token', // Authorization: Token <key>
+  'x-api-key', // X-Api-Key: <key>
+  'api-key', // Api-Key: <key>
+  'x-auth-token', // X-Auth-Token: <key>
+  'body-api_key', // { api_key: <key> } in the JSON body
+  'body-token', // { token: <key> } in the JSON body
+  'query-api_key', // ?api_key=<key>
+] as const;
+
+export type AuthScheme = (typeof AUTH_SCHEMES)[number];
+
+export interface AuthParts {
+  headers: Record<string, string>;
+  body: Record<string, string>;
+  query: Record<string, string>;
+}
+
+/**
+ * Exactly one credential is sent per request. Sending several at once makes a
+ * 401 impossible to attribute, and some gateways reject unexpected auth headers
+ * outright.
+ */
+export function buildAuth(scheme: AuthScheme, apiKey: string): AuthParts {
+  const empty = { headers: {}, body: {}, query: {} };
+  switch (scheme) {
+    case 'bearer':
+      return { ...empty, headers: { authorization: `Bearer ${apiKey}` } };
+    case 'raw':
+      return { ...empty, headers: { authorization: apiKey } };
+    case 'token':
+      return { ...empty, headers: { authorization: `Token ${apiKey}` } };
+    case 'x-api-key':
+      return { ...empty, headers: { 'x-api-key': apiKey } };
+    case 'api-key':
+      return { ...empty, headers: { 'api-key': apiKey } };
+    case 'x-auth-token':
+      return { ...empty, headers: { 'x-auth-token': apiKey } };
+    case 'body-api_key':
+      return { ...empty, body: { api_key: apiKey } };
+    case 'body-token':
+      return { ...empty, body: { token: apiKey } };
+    case 'query-api_key':
+      return { ...empty, query: { api_key: apiKey } };
+  }
+}
+
+export function configuredScheme(): AuthScheme {
+  const raw = (process.env.MDM_AUTH_SCHEME ?? 'bearer').trim().toLowerCase();
+  return (AUTH_SCHEMES as readonly string[]).includes(raw) ? (raw as AuthScheme) : 'bearer';
+}
+
 function config() {
   const env = requireSection('mdm') as { MDM_API_BASE_URL: string; MDM_API_KEY: string };
-  return { baseUrl: env.MDM_API_BASE_URL.replace(/\/$/, ''), apiKey: env.MDM_API_KEY };
+  return {
+    baseUrl: env.MDM_API_BASE_URL.replace(/\/$/, ''),
+    apiKey: env.MDM_API_KEY,
+    scheme: configuredScheme(),
+  };
 }
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -130,21 +192,35 @@ export function resolveMdmUrl(baseUrl: string, path: string): string {
   return `${base}${suffix}`;
 }
 
-async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const { baseUrl, apiKey } = config();
-  const url = resolveMdmUrl(baseUrl, path);
+export interface MdmRequestOptions {
+  method?: 'GET' | 'POST';
+  /** Sent as the JSON body, with any body-borne credential merged in. */
+  body?: Record<string, unknown>;
+  /** Overrides MDM_AUTH_SCHEME; used by the auth probe. */
+  scheme?: AuthScheme;
+}
+
+async function request<T>(path: string, options: MdmRequestOptions = {}): Promise<T> {
+  const { baseUrl, apiKey, scheme: configured } = config();
+  const scheme = options.scheme ?? configured;
+  const auth = buildAuth(scheme, apiKey);
+
+  const url = new URL(resolveMdmUrl(baseUrl, path));
+  for (const [key, value] of Object.entries(auth.query)) url.searchParams.set(key, value);
+
+  const method = options.method ?? 'GET';
+  const payload = options.body ? { ...options.body, ...auth.body } : undefined;
 
   let lastError: MdmApiError | undefined;
   for (let attempt = 0; attempt < 3; attempt += 1) {
-    const response = await fetch(url, {
-      ...init,
+    const response = await fetch(url.toString(), {
+      method,
       cache: 'no-store',
+      ...(payload ? { body: JSON.stringify(payload) } : {}),
       headers: {
         accept: 'application/json',
         'content-type': 'application/json',
-        authorization: `Bearer ${apiKey}`,
-        'x-api-key': apiKey,
-        ...(init.headers ?? {}),
+        ...auth.headers,
       },
     });
 
@@ -152,7 +228,9 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
     const body = await response.text().catch(() => '');
     lastError = new MdmApiError(
-      `MDM API ${response.status} on ${init.method ?? 'GET'} ${path}`,
+      response.status === 401 || response.status === 403
+        ? `MDM API ${response.status} on ${method} ${path} - the API key was rejected using auth scheme "${scheme}". Run "npm run mdm:probe" to find the scheme this account accepts, then set MDM_AUTH_SCHEME.`
+        : `MDM API ${response.status} on ${method} ${path}`,
       response.status,
       body,
     );
@@ -273,8 +351,38 @@ export function buildSearchBody(query: MdmQuery = {}, page = query.page ?? 1): M
   };
 }
 
-function searchOrders(body: MdmSearchBody): Promise<unknown> {
-  return request<unknown>(ORDERS_SEARCH_PATH, { method: 'POST', body: JSON.stringify(body) });
+function searchOrders(body: MdmSearchBody, scheme?: AuthScheme): Promise<unknown> {
+  return request<unknown>(ORDERS_SEARCH_PATH, { method: 'POST', body: { ...body }, scheme });
+}
+
+/**
+ * Tries one auth scheme against the live search endpoint and reports what came
+ * back, so the working scheme is found empirically rather than by guesswork.
+ */
+export async function probeAuthScheme(
+  scheme: AuthScheme,
+): Promise<{ scheme: AuthScheme; ok: boolean; status: number | null; detail: string }> {
+  try {
+    const payload = await searchOrders(buildSearchBody({ perPage: 1 }, 1), scheme);
+    const rows = unwrapRows(payload);
+    return {
+      scheme,
+      ok: true,
+      status: 200,
+      detail: `accepted - ${rows.length} row(s) returned`,
+    };
+  } catch (error) {
+    if (error instanceof MdmApiError) {
+      const body = typeof error.body === 'string' ? error.body.slice(0, 120).replace(/\s+/g, ' ') : '';
+      return { scheme, ok: false, status: error.status, detail: body || error.message.slice(0, 120) };
+    }
+    return {
+      scheme,
+      ok: false,
+      status: null,
+      detail: error instanceof Error ? error.message.slice(0, 120) : 'unknown error',
+    };
+  }
 }
 
 export async function fetchOrders(query: MdmQuery = {}): Promise<MdmOrder[]> {

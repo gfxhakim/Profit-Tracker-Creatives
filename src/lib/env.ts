@@ -16,6 +16,8 @@ const serverSchema = z.object({
 
   MDM_API_BASE_URL: z.string().url(),
   MDM_API_KEY: z.string().min(1),
+  /** How the API key is presented; see AUTH_SCHEMES in lib/mdm.ts. */
+  MDM_AUTH_SCHEME: z.string().optional(),
 
   DATABASE_URL: z.string().min(1),
   NEXTAUTH_SECRET: z.string().min(16, 'NEXTAUTH_SECRET must be at least 16 characters'),
