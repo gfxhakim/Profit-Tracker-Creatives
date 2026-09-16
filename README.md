@@ -174,6 +174,13 @@ in the URL must already exist; Prisma creates tables, not the database itself:
 createdb cod_tracker
 ```
 
+**MDM sync returns 404**
+
+Orders are read through `POST /api/v2/orders/search`, with the date range and
+paging in the JSON body. Set `MDM_API_BASE_URL` to the host only
+(`https://api.mdm.express`) — the client appends the path. A base URL that
+already ends in `/api/v2` is also accepted and not doubled.
+
 **Meta or MDM sync returns an error**
 
 Check the Settings page — every sync attempt is recorded with its error message.

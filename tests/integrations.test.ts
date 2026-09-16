@@ -10,7 +10,7 @@ import {
   verifyShopifyHmac,
   type ShopifyOrderPayload,
 } from '@/lib/shopify';
-import { mapMdmOrder, normalizeMdmStatus } from '@/lib/mdm';
+import { mapMdmOrder, normalizeMdmStatus, statusKey } from '@/lib/mdm';
 import { resolveUtmContent, metaBudgetToMajor, metaNumber } from '@/lib/meta';
 import { eachDay, previousRange, resolveRange, toIsoDate } from '@/lib/dates';
 
@@ -102,6 +102,21 @@ describe('normalizeMdmStatus', () => {
     expect(normalizeMdmStatus('En cours de livraison')).toBe('SHIPPED');
     expect(normalizeMdmStatus('RETOUR')).toBe('RETURNED');
     expect(normalizeMdmStatus('Injoignable')).toBe('CANCELLED');
+  });
+
+  it('folds accents rather than deleting them', () => {
+    // Deleting the accent would key "Livré" as LIVR, which matches nothing and
+    // would silently mark every delivered order as NEW.
+    expect(normalizeMdmStatus('Livré')).toBe('DELIVERED');
+    expect(normalizeMdmStatus('Expédié')).toBe('SHIPPED');
+    expect(normalizeMdmStatus('Annulé')).toBe('CANCELLED');
+    expect(normalizeMdmStatus('Retourné')).toBe('RETURNED');
+    expect(normalizeMdmStatus('Confirmé')).toBe('CONFIRMED');
+  });
+
+  it('keys accented and unaccented spellings identically', () => {
+    expect(statusKey('Livré')).toBe(statusKey('livre'));
+    expect(statusKey('En cours de livraison')).toBe('ENCOURSDELIVRAISON');
   });
 
   it('defaults an unknown or missing status to NEW rather than guessing', () => {
