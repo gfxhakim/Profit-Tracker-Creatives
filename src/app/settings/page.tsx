@@ -75,12 +75,12 @@ export default async function SettingsPage() {
 
       {expiredToken ? (
         <section className="panel border-loss/40">
-          <h2 className="text-sm font-semibold text-loss">MDM token needs refreshing</h2>
+          <h2 className="text-sm font-semibold text-loss">MDM API key needs refreshing</h2>
           <p className="mt-2 text-sm text-muted">
-            The last MDM sync was rejected with a {expiredToken}. The endpoint and bearer
-            authentication match MDM&apos;s API reference, so the token itself is no longer valid.
-            Generate a new key in the MDM dashboard, update <code className="text-accent">MDM_API_KEY</code>,
-            and restart the app.
+            The last MDM sync was rejected with a {expiredToken}. The endpoint and{' '}
+            <code className="text-accent">X-API-Key</code> authentication are verified against the live
+            API, so the key itself was rejected. Generate a new one in the MDM dashboard, update{' '}
+            <code className="text-accent">MDM_API_KEY</code>, and restart the app.
           </p>
         </section>
       ) : null}

@@ -16,9 +16,9 @@ import type { OrderStatus } from '@/lib/profit-engine';
 /**
  * Order-list endpoint, relative to MDM_API_BASE_URL.
  *
- * Confirmed against the MDM API reference: POST /api/v2/orders/search, with
- * bearer authentication. MDM_ORDERS_PATH remains available as an escape hatch
- * if the API ever moves, but it should not be needed.
+ * Verified against the live API: POST /api/v2/orders/search, authenticated
+ * with an X-API-Key header. MDM_ORDERS_PATH remains available as an escape
+ * hatch if the API ever moves, but it should not be needed.
  */
 export const DEFAULT_ORDERS_PATH = '/api/v2/orders/search';
 
@@ -274,7 +274,7 @@ async function request<T>(path: string, options: MdmRequestOptions = {}): Promis
     const body = await response.text().catch(() => '');
     lastError = new MdmApiError(
       response.status === 401 || response.status === 403
-        ? `MDM API ${response.status} on ${method} ${path}. The endpoint and bearer authentication match MDM's API reference, so the token itself was rejected - generate a new one in the MDM dashboard and update MDM_API_KEY.`
+        ? `MDM API ${response.status} on ${method} ${path} using auth scheme "${scheme}". The endpoint and X-API-Key authentication are verified against the live API, so the key itself was rejected - generate a new one in the MDM dashboard and update MDM_API_KEY.`
         : `MDM API ${response.status} on ${method} ${path}`,
       response.status,
       body,
