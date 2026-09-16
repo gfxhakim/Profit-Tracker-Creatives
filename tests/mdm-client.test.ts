@@ -8,6 +8,7 @@ import {
   mapMdmOrder,
   orderByTrackingIdPath,
   ordersPath,
+  normalizeMdmStatus,
   buildSearchBody,
   fetchOrderByReference,
   fetchOrders,
@@ -264,5 +265,41 @@ describe('fetchOrderByTrackingId', () => {
     expect(calls[0].method).toBe('GET');
     expect(calls[0].url).toBe('https://api.mdm.express/api/v2/orders/MDM123');
     expect(order?.id).toBe('MDM123');
+  });
+});
+
+/**
+ * These three facts are confirmed against MDM's API reference. They are pinned
+ * so a refactor cannot quietly change the contract.
+ */
+describe('confirmed MDM contract', () => {
+  it('defaults to POST /api/v2/orders/search', () => {
+    expect(DEFAULT_ORDERS_PATH).toBe('/api/v2/orders/search');
+    expect(ordersPath()).toBe('/api/v2/orders/search');
+  });
+
+  it('authenticates with Authorization: Bearer <token> by default', async () => {
+    delete process.env.MDM_AUTH_SCHEME;
+    const calls = stubFetch(() => ({ data: [] }));
+
+    await fetchOrders({ since: '2026-09-01', until: '2026-09-15' });
+
+    expect(calls[0].method).toBe('POST');
+    expect(calls[0].url).toBe('https://api.mdm.express/api/v2/orders/search');
+    expect(calls[0].headers.authorization).toBe('Bearer test-key');
+  });
+
+  it('identifies an order by its tracking id ahead of any other field', () => {
+    // A payload carrying several id-ish fields must resolve to the tracking id.
+    expect(mapMdmOrder({ id: '7', order_id: '9', tracking_id: 'MDM123' }).id).toBe('MDM123');
+    expect(mapMdmOrder({ id: '7', trackingId: 'MDM124' }).id).toBe('MDM124');
+  });
+
+  it('matches a synced order back by its stored tracking id', () => {
+    // mdm-sync stores mapMdmOrder().id as Order.mdmOrderId and matches on it.
+    const mapped = mapMdmOrder({ trackingId: 'MDM999', reference: '#1042', statut: 'Livré' });
+    expect(mapped.id).toBe('MDM999');
+    expect(mapped.reference).toBe('#1042');
+    expect(normalizeMdmStatus(mapped.status)).toBe('DELIVERED');
   });
 });

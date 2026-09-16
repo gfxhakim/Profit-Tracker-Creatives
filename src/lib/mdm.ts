@@ -14,8 +14,11 @@ import type { OrderStatus } from '@/lib/profit-engine';
  */
 
 /**
- * Order-list endpoint, relative to MDM_API_BASE_URL. MDM's "Get Orders" is a
- * POST; override the path with MDM_ORDERS_PATH if this default is not it.
+ * Order-list endpoint, relative to MDM_API_BASE_URL.
+ *
+ * Confirmed against the MDM API reference: POST /api/v2/orders/search, with
+ * bearer authentication. MDM_ORDERS_PATH remains available as an escape hatch
+ * if the API ever moves, but it should not be needed.
  */
 export const DEFAULT_ORDERS_PATH = '/api/v2/orders/search';
 
@@ -128,8 +131,11 @@ export function normalizeMdmStatus(raw: string | undefined | null): OrderStatus 
 }
 
 /**
- * How the API key is presented. MDM's scheme is set with MDM_AUTH_SCHEME;
- * `npm run mdm:probe` reports which one the live API accepts.
+ * How the API key is presented.
+ *
+ * MDM's reference documents bearer authentication, which is the default. The
+ * remaining schemes exist only so `npm run mdm:probe` can rule them out when
+ * diagnosing a rejected credential.
  */
 export const AUTH_SCHEMES = [
   'bearer', // Authorization: Bearer <key>   (default)
@@ -251,7 +257,7 @@ async function request<T>(path: string, options: MdmRequestOptions = {}): Promis
     const body = await response.text().catch(() => '');
     lastError = new MdmApiError(
       response.status === 401 || response.status === 403
-        ? `MDM API ${response.status} on ${method} ${path} - rejected using auth scheme "${scheme}". Run "npm run mdm:probe": it checks both the endpoint path (MDM_ORDERS_PATH) and the credential shape (MDM_AUTH_SCHEME).`
+        ? `MDM API ${response.status} on ${method} ${path}. The endpoint and bearer authentication match MDM's API reference, so the token itself was rejected - generate a new one in the MDM dashboard and update MDM_API_KEY.`
         : `MDM API ${response.status} on ${method} ${path}`,
       response.status,
       body,

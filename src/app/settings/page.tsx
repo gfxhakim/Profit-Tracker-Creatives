@@ -15,6 +15,20 @@ export default async function SettingsPage() {
     shopify: envSectionStatus('shopify'),
   };
 
+  // A rejected credential is the one MDM failure an operator must act on, so it
+  // gets a plain-language callout rather than a line in the audit table.
+  const lastMdmRun = await safeLoad(() =>
+    prisma.syncLog.findFirst({ where: { source: 'MDM' }, orderBy: { startedAt: 'desc' } }),
+  );
+  const expiredToken =
+    lastMdmRun.ok && lastMdmRun.data?.status === 'FAILED'
+      ? /\b401\b/.test(lastMdmRun.data.message ?? '')
+        ? '401 Unauthorized'
+        : /\b403\b/.test(lastMdmRun.data.message ?? '')
+          ? '403 Forbidden'
+          : null
+      : null;
+
   const loaded = await safeLoad(async () => {
     const [campaigns, products, logs] = await Promise.all([
       prisma.campaign.findMany({
@@ -58,6 +72,18 @@ export default async function SettingsPage() {
           </div>
         ))}
       </section>
+
+      {expiredToken ? (
+        <section className="panel border-loss/40">
+          <h2 className="text-sm font-semibold text-loss">MDM token needs refreshing</h2>
+          <p className="mt-2 text-sm text-muted">
+            The last MDM sync was rejected with a {expiredToken}. The endpoint and bearer
+            authentication match MDM&apos;s API reference, so the token itself is no longer valid.
+            Generate a new key in the MDM dashboard, update <code className="text-accent">MDM_API_KEY</code>,
+            and restart the app.
+          </p>
+        </section>
+      ) : null}
 
       <SyncPanel />
 
