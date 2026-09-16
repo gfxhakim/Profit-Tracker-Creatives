@@ -1,5 +1,11 @@
+import { config } from 'dotenv';
 import { PrismaClient } from '@prisma/client';
 import { hashPassword } from '../src/lib/password';
+
+// A standalone tsx run loads no env file on its own, and the Prisma CLI reads
+// only `.env`. Load both, preferring `.env.local`, so the seed works either way.
+config({ path: '.env.local', quiet: true });
+config({ path: '.env', quiet: true });
 
 /**
  * Seeds the first dashboard user, plus a demo product/campaign/creative set and

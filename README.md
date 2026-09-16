@@ -71,12 +71,14 @@ numbers — it will show in the sync log with a reason.
 ## Setup
 
 ```bash
-npm install
-cp .env.example .env.local     # fill in real credentials
-npm run prisma:migrate         # creates the schema
-npm run db:seed                # admin user + demo data
+npm install                # also runs `prisma generate` via postinstall
+cp .env.example .env       # fill in real credentials
+npm run prisma:migrate     # creates the schema
+npm run db:seed            # admin user + demo data
 npm run dev
 ```
+
+On Windows PowerShell, use `copy .env.example .env`.
 
 Visit http://localhost:3000 and sign in with `SEED_ADMIN_EMAIL` /
 `SEED_ADMIN_PASSWORD`.
@@ -85,8 +87,9 @@ Set `SEED_DEMO_DATA=false` to seed only the admin user, with no demo rows.
 
 ### Environment
 
-See `.env.example` for the full list. `.env.local` is gitignored — never commit
-live credentials. Each integration's variables are validated independently, so a
+See `.env.example` for the full list. Use `.env`: the Prisma CLI reads only
+`.env`, while Next.js reads `.env.local` first and then `.env`. Both are
+gitignored — never commit live credentials. Each integration's variables are validated independently, so a
 missing MDM key degrades that one sync instead of breaking the app; `/api/health`
 and the Settings page report exactly which keys are missing.
 
@@ -144,6 +147,38 @@ npm run lint
 
 The profit engine is pure and has no database or network dependency, so the
 accounting rules are tested directly.
+
+## Troubleshooting
+
+**`@prisma/client did not initialize yet. Please run "prisma generate"`**
+
+The generated client lives in `node_modules`, so it never arrives with a clone.
+`postinstall` generates it, but that is skipped by `npm install --ignore-scripts`
+and by some CI caches. Fix it directly:
+
+```bash
+npx prisma generate
+```
+
+**`Environment variable not found: DATABASE_URL`**
+
+The Prisma CLI reads `.env` only — not `.env.local`. Make sure `.env` exists at
+the repository root (`cp .env.example .env`) and contains `DATABASE_URL`.
+
+**`Can't reach database server at localhost:5432`**
+
+Postgres is not running, or `DATABASE_URL` points somewhere else. The database
+in the URL must already exist; Prisma creates tables, not the database itself:
+
+```bash
+createdb cod_tracker
+```
+
+**Meta or MDM sync returns an error**
+
+Check the Settings page — every sync attempt is recorded with its error message.
+A 403 from Meta usually means an expired token or one lacking `ads_read` on the
+ad account.
 
 ## Deployment notes
 
