@@ -183,11 +183,10 @@ already ends in `/api/v2` is also accepted and not doubled.
 
 **MDM sync returns 401 or 403**
 
-The endpoint (`POST /api/v2/orders/search`) and bearer authentication are
-confirmed against MDM's API reference, so a rejection means the **token** is
-invalid or expired: generate a new key in the MDM dashboard, update
-`MDM_API_KEY`, and restart. The Settings page shows a callout when the last
-sync failed this way.
+The endpoint (`POST /api/v2/orders/search`) and `X-API-Key` authentication are
+verified against the live API, so a rejection means the **key** is invalid or
+expired: generate a new one in the MDM dashboard, update `MDM_API_KEY`, and
+restart. The Settings page shows a callout when the last sync failed this way.
 
 To confirm it really is the token rather than the contract:
 
@@ -209,6 +208,13 @@ npm run mdm:probe -- --dump
 It prints one order exactly as MDM returned it, next to how this client read
 it, and warns when a status fell back to `NEW` or when no reference was found
 to match the order back to Shopify.
+
+**An MDM sync reports "unmapped status(es) defaulted to NEW"**
+
+MDM sent a status this client does not recognise, so those orders were left as
+`NEW`. That is deliberately loud: a delivered order silently sitting at `NEW`
+would be left out of revenue entirely. Add the reported value to `STATUS_MAP`
+in `src/lib/mdm.ts` against the canonical status it means.
 
 **Meta or MDM sync returns an error**
 

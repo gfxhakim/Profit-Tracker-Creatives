@@ -1,6 +1,6 @@
 import { prisma } from '@/lib/db';
 import { toIsoDate, type DateRange } from '@/lib/dates';
-import { fetchOrders, normalizeMdmStatus, type MdmOrder } from '@/lib/mdm';
+import { fetchOrders, isKnownMdmStatus, normalizeMdmStatus, type MdmOrder } from '@/lib/mdm';
 import type { OrderStatus } from '@/lib/profit-engine';
 
 /**
@@ -17,6 +17,8 @@ export interface MdmSyncResult {
   ordersMatched: number;
   ordersUpdated: number;
   unmatched: { mdmOrderId: string; reference?: string; phone?: string }[];
+  /** Raw statuses MDM sent that this client does not map; these default to NEW. */
+  unmappedStatuses: string[];
   range: { since: string; until: string };
 }
 
@@ -35,10 +37,16 @@ function timestampsFor(status: OrderStatus, mdmOrder: MdmOrder) {
     return Number.isNaN(date.getTime()) ? undefined : date;
   };
 
+  // MDM reports when the order entered its current status; use that in
+  // preference to the moment this sync happened to run, so a delivery that
+  // happened yesterday is not dated today.
+  const statusDate = parse(mdmOrder.statusDate) ?? parse(mdmOrder.updatedAt);
+  const onStatus = (match: OrderStatus) => (status === match ? (statusDate ?? new Date()) : undefined);
+
   return {
-    confirmedAt: parse(mdmOrder.confirmedAt) ?? (status === 'CONFIRMED' ? new Date() : undefined),
-    deliveredAt: parse(mdmOrder.deliveredAt) ?? (status === 'DELIVERED' ? new Date() : undefined),
-    returnedAt: parse(mdmOrder.returnedAt) ?? (status === 'RETURNED' ? new Date() : undefined),
+    confirmedAt: parse(mdmOrder.confirmedAt) ?? onStatus('CONFIRMED'),
+    deliveredAt: parse(mdmOrder.deliveredAt) ?? onStatus('DELIVERED'),
+    returnedAt: parse(mdmOrder.returnedAt) ?? onStatus('RETURNED'),
   };
 }
 
@@ -80,6 +88,7 @@ export async function syncMdm(range: DateRange): Promise<MdmSyncResult> {
     let ordersMatched = 0;
     let ordersUpdated = 0;
     const unmatched: MdmSyncResult['unmatched'] = [];
+    const unmappedStatuses = new Set<string>();
 
     for (const mdmOrder of mdmOrders) {
       const reference = (mdmOrder.reference ?? '').replace(/^#/, '');
@@ -96,6 +105,7 @@ export async function syncMdm(range: DateRange): Promise<MdmSyncResult> {
 
       ordersMatched += 1;
       const status = normalizeMdmStatus(mdmOrder.status);
+      if (!isKnownMdmStatus(mdmOrder.status)) unmappedStatuses.add(mdmOrder.status);
       const timestamps = timestampsFor(status, mdmOrder);
 
       const unchanged =
@@ -120,10 +130,18 @@ export async function syncMdm(range: DateRange): Promise<MdmSyncResult> {
     await prisma.syncLog.update({
       where: { id: log.id },
       data: {
-        status: unmatched.length > 0 ? 'PARTIAL' : 'SUCCESS',
+        status: unmatched.length > 0 || unmappedStatuses.size > 0 ? 'PARTIAL' : 'SUCCESS',
         recordsRead: mdmOrders.length,
         recordsWritten: ordersUpdated,
-        message: unmatched.length > 0 ? `${unmatched.length} MDM order(s) had no local match` : null,
+        message:
+          [
+            unmatched.length > 0 ? `${unmatched.length} MDM order(s) had no local match` : null,
+            unmappedStatuses.size > 0
+              ? `unmapped status(es) defaulted to NEW: ${[...unmappedStatuses].join(', ')}`
+              : null,
+          ]
+            .filter(Boolean)
+            .join('; ') || null,
         finishedAt: new Date(),
       },
     });
@@ -133,6 +151,7 @@ export async function syncMdm(range: DateRange): Promise<MdmSyncResult> {
       ordersMatched,
       ordersUpdated,
       unmatched: unmatched.slice(0, 50),
+      unmappedStatuses: [...unmappedStatuses],
       range: { since: toIsoDate(range.since), until: toIsoDate(range.until) },
     };
   } catch (error) {

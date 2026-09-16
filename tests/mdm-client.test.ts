@@ -9,6 +9,7 @@ import {
   orderByTrackingIdPath,
   ordersPath,
   normalizeMdmStatus,
+  isKnownMdmStatus,
   buildSearchBody,
   fetchOrderByReference,
   fetchOrders,
@@ -100,7 +101,7 @@ describe('fetchOrders', () => {
       per_page: 200,
     });
     expect(calls[0].headers['content-type']).toBe('application/json');
-    expect(calls[0].headers.authorization).toBe('Bearer test-key');
+    expect(calls[0].headers['X-API-Key']).toBe('test-key');
   });
 
   it('pages until the API reports the last page', async () => {
@@ -181,7 +182,7 @@ describe('buildAuth', () => {
     expect(buildAuth('bearer', 'k').headers).toEqual({ authorization: 'Bearer k' });
     expect(buildAuth('raw', 'k').headers).toEqual({ authorization: 'k' });
     expect(buildAuth('token', 'k').headers).toEqual({ authorization: 'Token k' });
-    expect(buildAuth('x-api-key', 'k').headers).toEqual({ 'x-api-key': 'k' });
+    expect(buildAuth('x-api-key', 'k').headers).toEqual({ 'X-API-Key': 'k' });
     expect(buildAuth('x-auth-token', 'k').headers).toEqual({ 'x-auth-token': 'k' });
     expect(buildAuth('body-api_key', 'k').body).toEqual({ api_key: 'k' });
     expect(buildAuth('query-api_key', 'k').query).toEqual({ api_key: 'k' });
@@ -189,11 +190,11 @@ describe('buildAuth', () => {
 });
 
 describe('configuredScheme', () => {
-  it('defaults to bearer and ignores an unrecognised value', () => {
+  it('defaults to the verified scheme and ignores an unrecognised value', () => {
     delete process.env.MDM_AUTH_SCHEME;
-    expect(configuredScheme()).toBe('bearer');
+    expect(configuredScheme()).toBe('x-api-key');
     process.env.MDM_AUTH_SCHEME = 'nonsense';
-    expect(configuredScheme()).toBe('bearer');
+    expect(configuredScheme()).toBe('x-api-key');
   });
 
   it('accepts a configured scheme case-insensitively', () => {
@@ -278,15 +279,13 @@ describe('confirmed MDM contract', () => {
     expect(ordersPath()).toBe('/api/v2/orders/search');
   });
 
-  it('authenticates with Authorization: Bearer <token> by default', async () => {
-    delete process.env.MDM_AUTH_SCHEME;
-    const calls = stubFetch(() => ({ data: [] }));
+  it('posts to the confirmed endpoint', async () => {
+    const calls = stubFetch(() => ({ list: [] }));
 
     await fetchOrders({ since: '2026-09-01', until: '2026-09-15' });
 
     expect(calls[0].method).toBe('POST');
     expect(calls[0].url).toBe('https://api.mdm.express/api/v2/orders/search');
-    expect(calls[0].headers.authorization).toBe('Bearer test-key');
   });
 
   it('identifies an order by its tracking id ahead of any other field', () => {
@@ -301,5 +300,75 @@ describe('confirmed MDM contract', () => {
     expect(mapped.id).toBe('MDM999');
     expect(mapped.reference).toBe('#1042');
     expect(normalizeMdmStatus(mapped.status)).toBe('DELIVERED');
+  });
+});
+
+/**
+ * The contract verified against the live MDM API: X-API-Key, a `list`
+ * envelope, and orders keyed by trackingId with nested client/destination.
+ */
+describe('live MDM contract', () => {
+  const liveRow = {
+    trackingId: 'MDM-AA-001',
+    reference: '#1042',
+    status: 'delivered',
+    statusDate: '2026-09-14T09:30:00Z',
+    updatedAt: '2026-09-14T09:31:00Z',
+    destination: { cityName: 'Casablanca', streetAddress: '12 Rue des Fleurs' },
+    client: { firstName: 'Yassine', phone: '0600112233' },
+    price: 349,
+  };
+
+  it('authenticates with X-API-Key by default', async () => {
+    delete process.env.MDM_AUTH_SCHEME;
+    const calls = stubFetch(() => ({ list: [] }));
+
+    await fetchOrders({ since: '2026-09-01', until: '2026-09-15' });
+
+    expect(calls[0].headers['X-API-Key']).toBe('test-key');
+    expect(calls[0].headers.authorization).toBeUndefined();
+    expect(calls[0].url).toBe('https://api.mdm.express/api/v2/orders/search');
+  });
+
+  it('reads orders out of the list envelope', () => {
+    expect(unwrapRows({ list: [liveRow], total: 1, page: 1 })).toEqual([liveRow]);
+  });
+
+  it('maps every confirmed field, including the nested ones', () => {
+    expect(mapMdmOrder(liveRow)).toMatchObject({
+      id: 'MDM-AA-001',
+      reference: '#1042',
+      status: 'delivered',
+      statusDate: '2026-09-14T09:30:00Z',
+      phone: '0600112233',
+      clientName: 'Yassine',
+      city: 'Casablanca',
+      address: '12 Rue des Fleurs',
+      price: 349,
+    });
+  });
+
+  it('falls back to updatedAt when statusDate is absent', () => {
+    const { statusDate, ...withoutStatusDate } = liveRow;
+    expect(mapMdmOrder(withoutStatusDate).statusDate).toBe('2026-09-14T09:31:00Z');
+  });
+
+  it('maps MDM lowercase statuses', () => {
+    expect(normalizeMdmStatus('delivered')).toBe('DELIVERED');
+    expect(normalizeMdmStatus('cancelled')).toBe('CANCELLED');
+    expect(isKnownMdmStatus('delivered')).toBe(true);
+  });
+
+  it('flags an unrecognised status rather than passing it off as NEW', () => {
+    // Silently defaulting would hold a delivered order out of revenue.
+    expect(normalizeMdmStatus('awaitingWarehouse')).toBe('NEW');
+    expect(isKnownMdmStatus('awaitingWarehouse')).toBe(false);
+  });
+
+  it('survives a row missing its nested objects entirely', () => {
+    const mapped = mapMdmOrder({ trackingId: 'MDM-X', status: 'delivered' });
+    expect(mapped.id).toBe('MDM-X');
+    expect(mapped.city).toBeUndefined();
+    expect(mapped.phone).toBeUndefined();
   });
 });

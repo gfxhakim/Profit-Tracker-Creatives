@@ -42,6 +42,10 @@ export function SyncPanel() {
             }`
           : `${body.ordersRead} MDM orders read, ${body.ordersMatched} matched, ${body.ordersUpdated} updated.${
               body.unmatched?.length ? ` ${body.unmatched.length} unmatched.` : ''
+            }${
+              body.unmappedStatuses?.length
+                ? ` Unmapped status(es) treated as NEW: ${body.unmappedStatuses.join(', ')} - these need adding to STATUS_MAP.`
+                : ''
             }`,
     });
     setBusy(null);

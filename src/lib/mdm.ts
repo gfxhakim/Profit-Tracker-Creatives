@@ -49,11 +49,16 @@ export class MdmApiError extends Error {
 }
 
 export interface MdmOrder {
+  /** MDM's trackingId - the key this app stores as Order.mdmOrderId. */
   id: string;
   reference?: string;
   status: string;
+  /** When the order entered its current status. */
+  statusDate?: string;
   phone?: string;
+  clientName?: string;
   city?: string;
+  address?: string;
   price?: number;
   updatedAt?: string;
   deliveredAt?: string;
@@ -131,11 +136,20 @@ export function normalizeMdmStatus(raw: string | undefined | null): OrderStatus 
 }
 
 /**
+ * Whether a raw status is one this client recognises. An unrecognised status
+ * falls back to NEW, which would silently hold a delivered order out of the
+ * revenue figures, so syncs report these rather than swallowing them.
+ */
+export function isKnownMdmStatus(raw: string | undefined | null): boolean {
+  return Boolean(raw) && STATUS_MAP[statusKey(raw as string)] !== undefined;
+}
+
+/**
  * How the API key is presented.
  *
- * MDM's reference documents bearer authentication, which is the default. The
- * remaining schemes exist only so `npm run mdm:probe` can rule them out when
- * diagnosing a rejected credential.
+ * Confirmed against the live API: MDM expects `X-API-Key`. The remaining
+ * schemes exist only so `npm run mdm:probe` can rule them out when diagnosing
+ * a rejected credential.
  */
 export const AUTH_SCHEMES = [
   'bearer', // Authorization: Bearer <key>   (default)
@@ -150,6 +164,9 @@ export const AUTH_SCHEMES = [
 ] as const;
 
 export type AuthScheme = (typeof AUTH_SCHEMES)[number];
+
+/** Verified against the live MDM API. */
+export const DEFAULT_AUTH_SCHEME: AuthScheme = 'x-api-key';
 
 export interface AuthParts {
   headers: Record<string, string>;
@@ -172,7 +189,7 @@ export function buildAuth(scheme: AuthScheme, apiKey: string): AuthParts {
     case 'token':
       return { ...empty, headers: { authorization: `Token ${apiKey}` } };
     case 'x-api-key':
-      return { ...empty, headers: { 'x-api-key': apiKey } };
+      return { ...empty, headers: { 'X-API-Key': apiKey } };
     case 'api-key':
       return { ...empty, headers: { 'api-key': apiKey } };
     case 'x-auth-token':
@@ -187,8 +204,8 @@ export function buildAuth(scheme: AuthScheme, apiKey: string): AuthParts {
 }
 
 export function configuredScheme(): AuthScheme {
-  const raw = (process.env.MDM_AUTH_SCHEME ?? 'bearer').trim().toLowerCase();
-  return (AUTH_SCHEMES as readonly string[]).includes(raw) ? (raw as AuthScheme) : 'bearer';
+  const raw = (process.env.MDM_AUTH_SCHEME ?? DEFAULT_AUTH_SCHEME).trim().toLowerCase();
+  return (AUTH_SCHEMES as readonly string[]).includes(raw) ? (raw as AuthScheme) : DEFAULT_AUTH_SCHEME;
 }
 
 function config() {
@@ -269,7 +286,8 @@ async function request<T>(path: string, options: MdmRequestOptions = {}): Promis
   throw lastError ?? new MdmApiError('MDM request failed', 500);
 }
 
-const ROW_KEYS = ['data', 'results', 'orders', 'items', 'records'] as const;
+// `list` is MDM's confirmed envelope key; the rest are defensive fallbacks.
+const ROW_KEYS = ['list', 'data', 'results', 'orders', 'items', 'records'] as const;
 
 /**
  * Pulls rows out of whichever envelope MDM used, including a paginator nested
@@ -323,26 +341,45 @@ export function lastPageOf(payload: unknown): number | null {
   return null;
 }
 
+/** Reads a dotted path such as `destination.cityName`, tolerating gaps. */
+function readPath(row: Record<string, unknown>, path: string): unknown {
+  return path.split('.').reduce<unknown>((value, segment) => {
+    if (value === null || typeof value !== 'object') return undefined;
+    return (value as Record<string, unknown>)[segment];
+  }, row);
+}
+
+/** First non-empty value among the candidate paths, in priority order. */
 const pick = (row: Record<string, unknown>, keys: string[]): string | undefined => {
   for (const key of keys) {
-    const value = row[key];
+    const value = key.includes('.') ? readPath(row, key) : row[key];
     if (value !== undefined && value !== null && value !== '') return String(value);
   }
   return undefined;
 };
 
+/**
+ * Maps one row of `response.list` onto the canonical shape.
+ *
+ * The first path in each list is MDM's confirmed field; the rest are retained
+ * as fallbacks so a response from a different endpoint or API version still
+ * parses rather than silently yielding empty fields.
+ */
 export function mapMdmOrder(row: Record<string, unknown>): MdmOrder {
   const priceRaw = pick(row, ['price', 'total', 'amount', 'cod_amount', 'montant']);
   const price = priceRaw ? Number.parseFloat(priceRaw) : undefined;
+
   return {
-    // MDM identifies an order by its tracking id - GET /api/v2/orders/{trackingId}.
-    id: pick(row, ['tracking_id', 'trackingId', 'tracking_number', 'trackingNumber', 'id', 'order_id', 'orderId', 'code']) ?? '',
+    id: pick(row, ['trackingId', 'tracking_id', 'tracking_number', 'trackingNumber', 'id', 'order_id', 'orderId', 'code']) ?? '',
     reference: pick(row, ['reference', 'ref', 'external_id', 'order_reference', 'shopify_order_id']),
     status: pick(row, ['status', 'state', 'statut', 'order_status']) ?? 'NEW',
-    phone: pick(row, ['phone', 'customer_phone', 'telephone', 'tel']),
-    city: pick(row, ['city', 'ville', 'customer_city']),
+    statusDate: pick(row, ['statusDate', 'status_date', 'updatedAt', 'updated_at']),
+    phone: pick(row, ['client.phone', 'phone', 'customer_phone', 'telephone', 'tel']),
+    clientName: pick(row, ['client.firstName', 'client.name', 'customer_name', 'nom']),
+    city: pick(row, ['destination.cityName', 'city', 'ville', 'customer_city']),
+    address: pick(row, ['destination.streetAddress', 'address', 'adresse']),
     price: Number.isFinite(price) ? price : undefined,
-    updatedAt: pick(row, ['updated_at', 'updatedAt', 'last_update']),
+    updatedAt: pick(row, ['updatedAt', 'updated_at', 'last_update']),
     deliveredAt: pick(row, ['delivered_at', 'deliveredAt', 'date_livraison']),
     returnedAt: pick(row, ['returned_at', 'returnedAt', 'date_retour']),
     confirmedAt: pick(row, ['confirmed_at', 'confirmedAt', 'date_confirmation']),
