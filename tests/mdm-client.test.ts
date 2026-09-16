@@ -1,9 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AUTH_SCHEMES,
-  ORDERS_SEARCH_PATH,
+  DEFAULT_ORDERS_PATH,
   buildAuth,
   configuredScheme,
+  fetchOrderByTrackingId,
+  mapMdmOrder,
+  orderByTrackingIdPath,
+  ordersPath,
   buildSearchBody,
   fetchOrderByReference,
   fetchOrders,
@@ -61,19 +65,19 @@ describe('buildSearchBody', () => {
 
 describe('resolveMdmUrl', () => {
   it('joins the search path onto the base url', () => {
-    expect(resolveMdmUrl('https://api.mdm.express', ORDERS_SEARCH_PATH)).toBe(
+    expect(resolveMdmUrl('https://api.mdm.express', DEFAULT_ORDERS_PATH)).toBe(
       'https://api.mdm.express/api/v2/orders/search',
     );
   });
 
   it('tolerates a trailing slash', () => {
-    expect(resolveMdmUrl('https://api.mdm.express/', ORDERS_SEARCH_PATH)).toBe(
+    expect(resolveMdmUrl('https://api.mdm.express/', DEFAULT_ORDERS_PATH)).toBe(
       'https://api.mdm.express/api/v2/orders/search',
     );
   });
 
   it('does not repeat an api prefix already present in the base url', () => {
-    expect(resolveMdmUrl('https://api.mdm.express/api/v2', ORDERS_SEARCH_PATH)).toBe(
+    expect(resolveMdmUrl('https://api.mdm.express/api/v2', DEFAULT_ORDERS_PATH)).toBe(
       'https://api.mdm.express/api/v2/orders/search',
     );
   });
@@ -220,5 +224,45 @@ describe('auth scheme on the wire', () => {
     expect(calls[0].body).toMatchObject({ api_key: 'test-key', start_date: '2026-09-01', page: 1 });
     expect(calls[0].headers.authorization).toBeUndefined();
     delete process.env.MDM_AUTH_SCHEME;
+  });
+});
+
+describe('ordersPath', () => {
+  afterEach(() => {
+    delete process.env.MDM_ORDERS_PATH;
+  });
+
+  it('defaults to the documented search path', () => {
+    expect(ordersPath()).toBe(DEFAULT_ORDERS_PATH);
+  });
+
+  it('is overridable without a code change', () => {
+    process.env.MDM_ORDERS_PATH = '/api/v2/orders';
+    expect(ordersPath()).toBe('/api/v2/orders');
+  });
+
+  it('builds the single-order path from a tracking id', () => {
+    expect(orderByTrackingIdPath('MDM 123/4')).toBe('/api/v2/orders/MDM%20123%2F4');
+  });
+});
+
+describe('mapMdmOrder tracking ids', () => {
+  it('reads the order id from MDM tracking-id field names', () => {
+    expect(mapMdmOrder({ tracking_id: 'MDM123' }).id).toBe('MDM123');
+    expect(mapMdmOrder({ trackingId: 'MDM124' }).id).toBe('MDM124');
+    expect(mapMdmOrder({ tracking_number: 'MDM125' }).id).toBe('MDM125');
+    expect(mapMdmOrder({ id: 'MDM126' }).id).toBe('MDM126');
+  });
+});
+
+describe('fetchOrderByTrackingId', () => {
+  it('GETs the documented single-order path', async () => {
+    const calls = stubFetch(() => ({ tracking_id: 'MDM123', status: 'Livré' }));
+
+    const order = await fetchOrderByTrackingId('MDM123');
+
+    expect(calls[0].method).toBe('GET');
+    expect(calls[0].url).toBe('https://api.mdm.express/api/v2/orders/MDM123');
+    expect(order?.id).toBe('MDM123');
   });
 });

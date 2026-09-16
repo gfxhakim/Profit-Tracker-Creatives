@@ -1,7 +1,9 @@
 import { config } from 'dotenv';
 import {
   AUTH_SCHEMES,
-  ORDERS_SEARCH_PATH,
+  DEFAULT_ORDERS_PATH,
+  ORDERS_PATH_CANDIDATES,
+  probeOrdersPath,
   buildSearchBody,
   mapMdmOrder,
   normalizeMdmStatus,
@@ -31,8 +33,44 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`Endpoint : POST ${resolveMdmUrl(baseUrl, ORDERS_SEARCH_PATH)}`);
+  console.log(`Host     : ${baseUrl}`);
   console.log(`API key  : ${apiKey.slice(0, 6)}…${apiKey.slice(-4)} (${apiKey.length} chars)\n`);
+
+  // Phase 1: find the list endpoint. MDM documents bearer auth, so hold the
+  // credential constant and vary only the path.
+  console.log('Looking for the order-list endpoint (POST, bearer auth):');
+  const pathResults = [];
+  for (const candidate of ORDERS_PATH_CANDIDATES) {
+    process.stdout.write(`  ${candidate.padEnd(26)} `);
+    const result = await probeOrdersPath(candidate, 'bearer');
+    pathResults.push(result);
+    console.log(`${result.ok ? 'OK  ' : String(result.status ?? 'ERR').padEnd(4)} ${result.detail}`);
+  }
+
+  const workingPath = pathResults.find((result) => result.ok);
+  if (workingPath) {
+    console.log(`\nWorking endpoint: POST ${resolveMdmUrl(baseUrl, workingPath.path)}`);
+    if (workingPath.path !== DEFAULT_ORDERS_PATH) {
+      console.log(`Add to your .env:\n\n    MDM_ORDERS_PATH="${workingPath.path}"\n`);
+    }
+    if (process.argv.includes('--dump')) await dumpSample('bearer', workingPath.path);
+    else console.log('\nRun with --dump to print one raw order and confirm the field mapping.');
+    return;
+  }
+
+  // A 404 everywhere means the path is wrong; a 401 everywhere points at the
+  // credential, so only then is it worth varying the auth scheme.
+  const allNotFound = pathResults.every((result) => result.status === 404);
+  if (allNotFound) {
+    console.log('\nEvery candidate path returned 404, so none of them is the list endpoint.');
+    console.log('In the MDM API reference, open Orders > "Get Orders" and read the URL');
+    console.log('shown at the top, then set MDM_ORDERS_PATH to its path.');
+    process.exitCode = 1;
+    return;
+  }
+
+  console.log('\nNo path was accepted with bearer auth. Trying other credential shapes');
+  console.log(`against ${DEFAULT_ORDERS_PATH}:\n`);
 
   const results = [];
   for (const scheme of AUTH_SCHEMES) {
@@ -49,15 +87,16 @@ async function main() {
     const scheme = working[0].scheme;
     console.log(`Working scheme: ${scheme}`);
     console.log(`Add this to your .env:\n\n    MDM_AUTH_SCHEME="${scheme}"\n`);
-    if (process.argv.includes('--dump')) await dumpSample(scheme);
+    if (process.argv.includes('--dump')) await dumpSample(scheme, DEFAULT_ORDERS_PATH);
     else console.log('Run with --dump to print one raw order, to confirm field and status mapping.');
     return;
   }
 
   const statuses = new Set(results.map((result) => result.status));
   if (statuses.size === 1 && statuses.has(401)) {
-    console.log('Every scheme returned 401. The key itself is most likely invalid,');
-    console.log('expired, or not enabled for this endpoint - check it in the MDM dashboard.');
+    console.log('Every scheme returned 401 on every path. MDM documents bearer auth, so');
+    console.log('the key itself is most likely invalid, expired, or not enabled for this');
+    console.log('endpoint - regenerate it in the MDM dashboard and try again.');
   } else {
     console.log('No scheme was accepted. The response bodies above usually name the');
     console.log('expected credential; send them over and the client can be matched to it.');
@@ -70,8 +109,8 @@ async function main() {
  * interpreted it. That is what confirms the field names and status vocabulary
  * without needing the API documentation.
  */
-async function dumpSample(scheme: AuthScheme) {
-  const payload = await rawSearch(buildSearchBody({ perPage: 1 }, 1), scheme);
+async function dumpSample(scheme: AuthScheme, path: string) {
+  const payload = await rawSearch(buildSearchBody({ perPage: 1 }, 1), scheme, path);
   const rows = unwrapRows(payload);
 
   console.log('--- envelope keys ---');

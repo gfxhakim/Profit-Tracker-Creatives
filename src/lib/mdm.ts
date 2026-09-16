@@ -13,8 +13,30 @@ import type { OrderStatus } from '@/lib/profit-engine';
  * sees the six canonical order statuses.
  */
 
-/** Search endpoint, relative to MDM_API_BASE_URL. */
-export const ORDERS_SEARCH_PATH = '/api/v2/orders/search';
+/**
+ * Order-list endpoint, relative to MDM_API_BASE_URL. MDM's "Get Orders" is a
+ * POST; override the path with MDM_ORDERS_PATH if this default is not it.
+ */
+export const DEFAULT_ORDERS_PATH = '/api/v2/orders/search';
+
+/** Candidate list paths the probe tries, most likely first. */
+export const ORDERS_PATH_CANDIDATES = [
+  '/api/v2/orders/search',
+  '/api/v2/orders',
+  '/api/v2/orders/list',
+  '/api/v2/orders/get',
+  '/api/v2/orders/filter',
+  '/api/v2/orders/all',
+] as const;
+
+export function ordersPath(): string {
+  return process.env.MDM_ORDERS_PATH?.trim() || DEFAULT_ORDERS_PATH;
+}
+
+/** Single order lookup: GET /api/v2/orders/{trackingId}. */
+export function orderByTrackingIdPath(trackingId: string): string {
+  return `/api/v2/orders/${encodeURIComponent(trackingId)}`;
+}
 
 export class MdmApiError extends Error {
   constructor(message: string, public readonly status: number, public readonly body?: unknown) {
@@ -229,7 +251,7 @@ async function request<T>(path: string, options: MdmRequestOptions = {}): Promis
     const body = await response.text().catch(() => '');
     lastError = new MdmApiError(
       response.status === 401 || response.status === 403
-        ? `MDM API ${response.status} on ${method} ${path} - the API key was rejected using auth scheme "${scheme}". Run "npm run mdm:probe" to find the scheme this account accepts, then set MDM_AUTH_SCHEME.`
+        ? `MDM API ${response.status} on ${method} ${path} - rejected using auth scheme "${scheme}". Run "npm run mdm:probe": it checks both the endpoint path (MDM_ORDERS_PATH) and the credential shape (MDM_AUTH_SCHEME).`
         : `MDM API ${response.status} on ${method} ${path}`,
       response.status,
       body,
@@ -307,7 +329,8 @@ export function mapMdmOrder(row: Record<string, unknown>): MdmOrder {
   const priceRaw = pick(row, ['price', 'total', 'amount', 'cod_amount', 'montant']);
   const price = priceRaw ? Number.parseFloat(priceRaw) : undefined;
   return {
-    id: pick(row, ['id', 'order_id', 'orderId', 'tracking_number', 'code']) ?? '',
+    // MDM identifies an order by its tracking id - GET /api/v2/orders/{trackingId}.
+    id: pick(row, ['tracking_id', 'trackingId', 'tracking_number', 'trackingNumber', 'id', 'order_id', 'orderId', 'code']) ?? '',
     reference: pick(row, ['reference', 'ref', 'external_id', 'order_reference', 'shopify_order_id']),
     status: pick(row, ['status', 'state', 'statut', 'order_status']) ?? 'NEW',
     phone: pick(row, ['phone', 'customer_phone', 'telephone', 'tel']),
@@ -351,13 +374,59 @@ export function buildSearchBody(query: MdmQuery = {}, page = query.page ?? 1): M
   };
 }
 
-function searchOrders(body: MdmSearchBody, scheme?: AuthScheme): Promise<unknown> {
-  return request<unknown>(ORDERS_SEARCH_PATH, { method: 'POST', body: { ...body }, scheme });
+function searchOrders(
+  body: MdmSearchBody,
+  scheme?: AuthScheme,
+  path = ordersPath(),
+): Promise<unknown> {
+  return request<unknown>(path, { method: 'POST', body: { ...body }, scheme });
+}
+
+/**
+ * Fetches one order by its MDM tracking id. Documented as
+ * GET /api/v2/orders/{trackingId}.
+ */
+export async function fetchOrderByTrackingId(trackingId: string): Promise<MdmOrder | null> {
+  const payload = await request<unknown>(orderByTrackingIdPath(trackingId), { method: 'GET' });
+  const rows = unwrapRows(payload);
+  if (rows.length > 0) return mapMdmOrder(rows[0]);
+  if (payload && typeof payload === 'object') {
+    const mapped = mapMdmOrder(payload as Record<string, unknown>);
+    return mapped.id ? mapped : null;
+  }
+  return null;
 }
 
 /** Unparsed search response, used by the probe to show MDM's real payload. */
-export function rawSearch(body: MdmSearchBody, scheme?: AuthScheme): Promise<unknown> {
-  return searchOrders(body, scheme);
+export function rawSearch(body: MdmSearchBody, scheme?: AuthScheme, path?: string): Promise<unknown> {
+  return searchOrders(body, scheme, path);
+}
+
+/**
+ * Tries one candidate list path and reports the status. A 404 means the path is
+ * wrong; a 401 with a valid token usually means the path exists but the
+ * credential was refused, so the two are reported separately.
+ */
+export async function probeOrdersPath(
+  path: string,
+  scheme?: AuthScheme,
+): Promise<{ path: string; ok: boolean; status: number | null; rows: number; detail: string }> {
+  try {
+    const payload = await searchOrders(buildSearchBody({ perPage: 1 }, 1), scheme, path);
+    return { path, ok: true, status: 200, rows: unwrapRows(payload).length, detail: 'accepted' };
+  } catch (error) {
+    if (error instanceof MdmApiError) {
+      const body = typeof error.body === 'string' ? error.body.slice(0, 90).replace(/\s+/g, ' ') : '';
+      return { path, ok: false, status: error.status, rows: 0, detail: body || error.message.slice(0, 90) };
+    }
+    return {
+      path,
+      ok: false,
+      status: null,
+      rows: 0,
+      detail: error instanceof Error ? error.message.slice(0, 90) : 'unknown error',
+    };
+  }
 }
 
 /**

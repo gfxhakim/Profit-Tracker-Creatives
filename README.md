@@ -181,24 +181,27 @@ paging in the JSON body. Set `MDM_API_BASE_URL` to the host only
 (`https://api.mdm.express`) — the client appends the path. A base URL that
 already ends in `/api/v2` is also accepted and not doubled.
 
-**MDM sync returns 401 or 403**
+**MDM sync returns 404 or 401**
 
-The endpoint exists but rejected the key. A 401 does not say which credential
-shape was expected, so probe for it instead of guessing:
+MDM documents bearer auth, so a failure is usually the endpoint path rather
+than the credential. The probe checks the path first, then the credential:
 
 ```bash
 npm run mdm:probe
 ```
 
-It tries each supported scheme against the live search endpoint and prints the
-one that works, ready to paste into `.env`:
+It tries each candidate list path with bearer auth, then — only if none is
+accepted — each credential shape, and prints what to paste into `.env`:
 
 ```env
-MDM_AUTH_SCHEME="x-auth-token"
+MDM_ORDERS_PATH="/api/v2/orders"
+MDM_AUTH_SCHEME="bearer"
 ```
 
-If every scheme returns 401, the key itself is invalid or not enabled for this
-endpoint — check it in the MDM dashboard.
+If every path returns 404, open Orders → "Get Orders" in the MDM API reference
+and read the URL at the top; that path goes in `MDM_ORDERS_PATH`. If every
+attempt returns 401, the key itself is invalid or not enabled — regenerate it
+in the MDM dashboard.
 
 Once a scheme works, confirm the field and status mapping against a real order:
 
