@@ -355,6 +355,11 @@ function searchOrders(body: MdmSearchBody, scheme?: AuthScheme): Promise<unknown
   return request<unknown>(ORDERS_SEARCH_PATH, { method: 'POST', body: { ...body }, scheme });
 }
 
+/** Unparsed search response, used by the probe to show MDM's real payload. */
+export function rawSearch(body: MdmSearchBody, scheme?: AuthScheme): Promise<unknown> {
+  return searchOrders(body, scheme);
+}
+
 /**
  * Tries one auth scheme against the live search endpoint and reports what came
  * back, so the working scheme is found empirically rather than by guesswork.

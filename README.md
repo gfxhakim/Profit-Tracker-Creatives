@@ -200,6 +200,16 @@ MDM_AUTH_SCHEME="x-auth-token"
 If every scheme returns 401, the key itself is invalid or not enabled for this
 endpoint — check it in the MDM dashboard.
 
+Once a scheme works, confirm the field and status mapping against a real order:
+
+```bash
+npm run mdm:probe -- --dump
+```
+
+It prints one order exactly as MDM returned it, next to how this client read
+it, and warns when a status fell back to `NEW` or when no reference was found
+to match the order back to Shopify.
+
 **Meta or MDM sync returns an error**
 
 Check the Settings page — every sync attempt is recorded with its error message.
